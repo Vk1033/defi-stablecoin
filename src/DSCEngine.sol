@@ -26,6 +26,7 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__CollateralDepositFailed();
     error DSCEngine__HealthFactorBroken();
     error DSCEngine__MintFailed();
+    error DSCEngine__TransferFailed();
 
     uint256 private constant ADDITIONAL_FEED_PRECISION = 1e10;
     uint256 private constant PRECISION = 1e18;
@@ -42,6 +43,7 @@ contract DSCEngine is ReentrancyGuard {
     DecentralizedStableCoin private immutable i_dsc;
 
     event CollateralDeposited(address indexed user, address indexed collateralToken, uint256 amount);
+    event CollateralRedeemed(address indexed user, address indexed collateralToken, uint256 amount);
 
     modifier moreThanZero(uint256 amount) {
         if (amount <= 0) {
@@ -70,12 +72,33 @@ contract DSCEngine is ReentrancyGuard {
         i_dsc = DecentralizedStableCoin(dscAddress);
     }
 
+    //////////////////
+    // External Functions
+    //////////////////
+
+    /**
+     *
+     * @param collateralToken The address of the collateral token
+     * @param amount The amount of collateral to deposit
+     * @param amountDSCToMint The amount of DSC to mint
+     * @notice This function allows users to deposit collateral and mint DSC in a single transaction.
+     */
+    function depositCollateralAndMintDSC(address collateralToken, uint256 amount, uint256 amountDSCToMint)
+        external
+        moreThanZero(amount)
+        isAllowedToken(collateralToken)
+        nonReentrant
+    {
+        depositCollateral(collateralToken, amount);
+        mintDSC(amountDSCToMint);
+    }
+
     /*
         * @param collateralToken The address of the collateral token
         * @param amount The amount of collateral to deposit
         */
     function depositCollateral(address collateralToken, uint256 amount)
-        external
+        public
         moreThanZero(amount)
         isAllowedToken(collateralToken)
         nonReentrant
@@ -88,12 +111,48 @@ contract DSCEngine is ReentrancyGuard {
         }
     }
 
+    function redeemCollateral(address collateralToken, uint256 amount) public moreThanZero(amount) nonReentrant {
+        s_collateralDeposits[msg.sender][collateralToken] -= amount;
+        emit CollateralRedeemed(msg.sender, collateralToken, amount);
+
+        bool success = IERC20(collateralToken).transfer(msg.sender, amount);
+        if (!success) {
+            revert DSCEngine__TransferFailed();
+        }
+        _revertIfHealthFactorIsBroken(msg.sender);
+    }
+
+    /**
+     * @notice This function allows users to redeem their collateral for DSC.
+     * @param collateralToken The address of the collateral token
+     * @param amountCollateral The amount of collateral to redeem
+     * @param amountDscToBurn The amount of DSC to burn
+     * @notice The caller must have enough collateral deposited and must maintain a healthy health factor.
+     */
+    function redeemCollateralForDSC(address collateralToken, uint256 amountCollateral, uint256 amountDscToBurn)
+        external
+    {
+        redeemCollateral(collateralToken, amountCollateral);
+        burnDSC(amountDscToBurn);
+        // redeemCollateral already checks health factor
+    }
+
+    function burnDSC(uint256 amount) public moreThanZero(amount) nonReentrant {
+        s_dscMinted[msg.sender] -= amount;
+        bool success = i_dsc.transferFrom(msg.sender, address(this), amount);
+        if (!success) {
+            revert DSCEngine__TransferFailed();
+        }
+        i_dsc.burn(amount);
+        _revertIfHealthFactorIsBroken(msg.sender);
+    }
+
     /**
      * @notice Mints DSC to the caller's address.
      * @param amountDSCToMint The amount of DSC to mint.
      * @notice The caller must have more collateral deposited than the value of DSC they are trying to mint.
      */
-    function mintDSC(uint256 amountDSCToMint) external moreThanZero(amountDSCToMint) nonReentrant {
+    function mintDSC(uint256 amountDSCToMint) public moreThanZero(amountDSCToMint) nonReentrant {
         s_dscMinted[msg.sender] += amountDSCToMint;
 
         _revertIfHealthFactorIsBroken(msg.sender);
