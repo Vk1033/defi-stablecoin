@@ -94,12 +94,10 @@ contract DSCEngineTest is Test {
     }
 
     function testCanDepositCollateralAndGetAccountInfo() public depositedCollateral {
-        (uint256 totalCollateralValueInUsd, uint256 totalDscMinted) = dsce.getAccountInformation(USER);
+        (uint256 totalDscMinted, uint256 totalCollateralValueInUsd) = dsce.getAccountInformation(USER);
         uint256 expectedDepositAmount = dsce.getTokenAmountFromUsd(weth, totalCollateralValueInUsd);
         assertEq(AMOUNT_COLLATERAL, expectedDepositAmount, "Total collateral value in USD is incorrect");
         assertEq(totalDscMinted, 0, "Total DSC minted should be zero after deposit");
-
-        vm.stopPrank();
     }
 
     function testEmitCollateralDepositedEvent() public {
@@ -361,18 +359,34 @@ contract DSCEngineTest is Test {
         vm.stopPrank();
     }
 
-    function testDepositCollateralAndMintDSCReentrancyIssue() public {
-        // This test documents a bug in the DSCEngine contract where depositCollateralAndMintDSC
-        // calls other functions with nonReentrant modifiers, causing a reentrancy guard issue
+    function testDepositCollateralAndMintDSCWorksCorrectly() public {
+        // This test verifies that depositCollateralAndMintDSC works correctly
+        // It calls depositCollateral and mintDSC in sequence without reentrancy issues
         address newUser = makeAddr("newUser");
         ERC20Mock(weth).mint(newUser, STARTING_ERC20_BALANCE);
 
         vm.startPrank(newUser);
         ERC20Mock(weth).approve(address(dsce), AMOUNT_COLLATERAL);
 
-        // This should fail due to the reentrancy guard design issue
-        vm.expectRevert(); // ReentrancyGuardReentrantCall
+        // Check initial balances
+        uint256 initialWethBalance = ERC20Mock(weth).balanceOf(newUser);
+        uint256 initialDscBalance = dsc.balanceOf(newUser);
+
+        // This should work correctly
         dsce.depositCollateralAndMintDSC(weth, AMOUNT_COLLATERAL, 5000e18);
+
+        // Verify the results
+        uint256 finalWethBalance = ERC20Mock(weth).balanceOf(newUser);
+        uint256 finalDscBalance = dsc.balanceOf(newUser);
+
+        assertEq(finalWethBalance, initialWethBalance - AMOUNT_COLLATERAL, "WETH should be transferred");
+        assertEq(finalDscBalance, initialDscBalance + 5000e18, "DSC should be minted");
+
+        // Verify account information
+        (uint256 totalDscMinted, uint256 totalCollateralValueInUsd) = dsce.getAccountInformation(newUser);
+        assertEq(totalDscMinted, 5000e18, "Should have minted 5000 DSC");
+        assertGt(totalCollateralValueInUsd, 0, "Should have collateral value");
+
         vm.stopPrank();
     }
 
@@ -620,30 +634,50 @@ contract DSCEngineTest is Test {
     function testPartialLiquidation() public depositCollateralAndMintDsc {
         address liquidator = makeAddr("liquidator");
 
-        // Setup liquidator
+        // Setup liquidator with sufficient collateral and DSC
         vm.startPrank(liquidator);
         ERC20Mock(weth).mint(liquidator, AMOUNT_COLLATERAL);
         ERC20Mock(weth).approve(address(dsce), AMOUNT_COLLATERAL);
         dsce.depositCollateral(weth, AMOUNT_COLLATERAL);
-        dsce.mintDSC(2000e18);
-        dsc.approve(address(dsce), 2000e18);
+
+        // Mint less DSC to keep liquidator healthy
+        dsce.mintDSC(1000e18); // Reduced from 2000e18
+        dsc.approve(address(dsce), 5000e18); // Approve more than needed for liquidation
         vm.stopPrank();
 
-        // Drop price
-        MockV3Aggregator(ethUsdPriceFeed).updateAnswer(900e8);
+        // Drop price to make USER liquidatable but keep liquidator healthy
+        MockV3Aggregator(ethUsdPriceFeed).updateAnswer(900e8); // $900/ETH
 
-        // Check initial debt
-        (, uint256 initialDebt) = dsce.getAccountInformation(USER);
+        // Verify USER is liquidatable
+        uint256 userHealthFactor = dsce.getHealthFactor(USER);
+        assertLt(userHealthFactor, 1e18, "User should be liquidatable");
+
+        // Check initial debt - use correct return order
+        (uint256 initialDebt,) = dsce.getAccountInformation(USER);
+        console2.log("Initial debt:", initialDebt / 1e18);
 
         vm.startPrank(liquidator);
         uint256 partialDebt = 500e18; // Only liquidate part of the debt
+
+        // Verify liquidator can cover this debt
+        uint256 liquidatorDscBalance = dsc.balanceOf(liquidator);
+        console2.log("Liquidator DSC balance:", liquidatorDscBalance / 1e18);
+        assertGe(liquidatorDscBalance, partialDebt, "Liquidator should have enough DSC");
+
         dsce.liquidate(weth, USER, partialDebt);
         vm.stopPrank();
 
-        // Check that debt was partially reduced
-        (, uint256 finalDebt) = dsce.getAccountInformation(USER);
+        // Check that debt was partially reduced - use correct return order
+        (uint256 finalDebt,) = dsce.getAccountInformation(USER);
+        console2.log("Final debt:", finalDebt / 1e18);
+        console2.log("Expected final debt:", (initialDebt - partialDebt) / 1e18);
+
         assertEq(finalDebt, initialDebt - partialDebt, "Debt should be partially reduced");
         assertGt(finalDebt, 0, "Should still have remaining debt");
+
+        // Verify health factor improved
+        uint256 finalHealthFactor = dsce.getHealthFactor(USER);
+        assertGt(finalHealthFactor, userHealthFactor, "Health factor should improve");
     }
 
     ////////////////////////////////
@@ -671,7 +705,7 @@ contract DSCEngineTest is Test {
 
     function testGetAccountInformationWithNoActivity() public {
         address newUser = makeAddr("newUser");
-        (uint256 totalCollateralValueInUsd, uint256 totalDscMinted) = dsce.getAccountInformation(newUser);
+        (uint256 totalDscMinted, uint256 totalCollateralValueInUsd) = dsce.getAccountInformation(newUser);
         assertEq(totalCollateralValueInUsd, 0, "Should return 0 collateral for new user");
         assertEq(totalDscMinted, 0, "Should return 0 DSC minted for new user");
     }

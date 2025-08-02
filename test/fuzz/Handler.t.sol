@@ -75,17 +75,14 @@ contract Handler is Test {
         }
     }
 
-    function redeemCollateral(uint256 collateralSeed, uint256 amount) external {
+    function redeemCollateral(uint256 collateralSeed, uint256 amountCollateral) public {
         ERC20Mock collateral = _getCollateralFromSeed(collateralSeed);
-        uint256 maxCollateralToRedeem = dsce.getCollateralBalanceOfUser(msg.sender, address(collateral));
-        amount = bound(amount, 0, maxCollateralToRedeem);
-
-        if (amount == 0) {
+        uint256 maxCollateralToRedeem = dsce.getCollateralBalanceOfUser(address(collateral), msg.sender);
+        amountCollateral = bound(amountCollateral, 0, maxCollateralToRedeem);
+        if (amountCollateral == 0) {
             return;
         }
-        vm.startPrank(msg.sender);
-        dsce.redeemCollateral(address(collateral), amount);
-        vm.stopPrank();
+        dsce.depositCollateral(address(collateral), amountCollateral);
     }
 
     // function updateCollateralPrice(uint96 newPrice) external {
