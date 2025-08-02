@@ -31,7 +31,7 @@ contract Handler is Test {
         ethUsdPriceFeed = MockV3Aggregator(dsce.getCollateralTokenPriceFeed(address(weth)));
     }
 
-    function mintDsc(uint256 amount, uint256 addressSeed) public {
+    function mintDSC(uint256 amount, uint256 addressSeed) public {
         if (usersWithCollateralDeposited.length == 0) {
             return;
         }
@@ -63,16 +63,8 @@ contract Handler is Test {
         collateral.approve(address(dsce), amount);
         dsce.depositCollateral(address(collateral), amount);
         vm.stopPrank();
-        bool userExists = false;
-        for (uint256 i = 0; i < usersWithCollateralDeposited.length; i++) {
-            if (usersWithCollateralDeposited[i] == msg.sender) {
-                userExists = true;
-                break;
-            }
-        }
-        if (!userExists) {
-            usersWithCollateralDeposited.push(msg.sender);
-        }
+
+        usersWithCollateralDeposited.push(msg.sender);
     }
 
     function _getCollateralFromSeed(uint256 seed) internal view returns (ERC20Mock) {
